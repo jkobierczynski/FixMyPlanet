@@ -1,2 +1,6 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Test fixtures are binary: never convert line endings in them.
+tests/data/* binary
+*.png binary
+*.tif binary
+*.fits binary
+*.bmp binary

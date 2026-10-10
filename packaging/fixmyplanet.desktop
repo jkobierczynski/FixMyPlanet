@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=FixMyPlanet
+GenericName=Planetary derotation
+Comment=Combine images of a rotating planet taken minutes apart
+Exec=fixmyplanet-gui %F
+Icon=fixmyplanet
+Terminal=false
+Categories=Science;Astronomy;Graphics;
+MimeType=application/json;

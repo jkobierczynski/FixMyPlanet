@@ -1,0 +1,130 @@
+name: Release
+
+# Builds the downloads for Linux, Windows and macOS when a version tag such as
+# v0.1.0 is pushed, and attaches them to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  QT_VERSION: "6.8.3"
+
+jobs:
+  linux:
+    # The oldest supported Ubuntu, so that the AppImage runs on older systems too.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+      - name: Build and test
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+      - name: Package AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          DESTDIR=AppDir cmake --install build
+          curl -fsSLO https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSLO https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy*.AppImage
+          export QMAKE="$(command -v qmake6 || command -v qmake)"
+          export LINUXDEPLOY_OUTPUT_VERSION="${GITHUB_REF_NAME#v}"
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --plugin qt --output appimage \
+            --desktop-file AppDir/usr/share/applications/fixmyplanet.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/fixmyplanet.png
+          mkdir dist
+          mv FixMyPlanet-*.AppImage "dist/fixmyplanet-${GITHUB_REF_NAME#v}-linux-x86_64.AppImage"
+          tar -C build -czf "dist/fixmyplanet-cli-${GITHUB_REF_NAME#v}-linux-x86_64.tar.gz" fixmyplanet
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: dist/*
+
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+      - name: Build and test
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --parallel
+          ctest --test-dir build -C Release --output-on-failure
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $stage = "fixmyplanet-$version-windows-x64"
+          cmake --install build --config Release --prefix $stage
+          Move-Item "$stage/bin/*" $stage
+          Remove-Item "$stage/bin"
+          windeployqt --release --no-translations --no-compiler-runtime "$stage/fixmyplanet-gui.exe"
+          Copy-Item README.md, LICENSE, CHANGELOG.md $stage
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path $stage -DestinationPath "dist/$stage.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: dist/*
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+      - name: Build and test
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cp build/fixmyplanet build/src/gui/fixmyplanet-gui.app/Contents/MacOS/fixmyplanet
+          # macdeployqt strips the Qt libraries it copies, which invalidates
+          # their signatures; sign the bundle again (ad hoc, no certificate).
+          macdeployqt build/src/gui/fixmyplanet-gui.app -codesign=- -dmg
+          mkdir dist
+          mv build/src/gui/fixmyplanet-gui.dmg "dist/fixmyplanet-${version}-macos-universal.dmg"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: dist/*
+
+  publish:
+    needs: [linux, windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          draft: true
+          generate_release_notes: true
